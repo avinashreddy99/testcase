@@ -1,36 +1,76 @@
- public  AllContactsResultList  getAllContactsUsingGET(Long idStage, String userName,Integer page, Integer pageSize)
-    {
-        AllContactsResultList allContactsResultList = new AllContactsResultList();
-        try {
-            Long userId = userDetailServiceImpl.getUser(userName);
-            if(!isValidStage(idStage)){
-                throw new ResourceNotFoundException("Stage id provided is not valid");
-            }
-            if(!hasStageAccess(userId, idStage)){
-                throw new ForbiddenException("Access denied to the requested user.");
-            }
-            Integer totalCount = contactsApi.getCountByStageUsingGET(idStage);
-            if(totalCount!=0){
-                int offset = page==1?0:(page-1) * pageSize;
-                int totalPageCount = totalCount%pageSize!=0?totalCount/pageSize+1:totalCount/pageSize;
-                validatePaginationRequest(totalPageCount,page,pageSize);
-                allContactsResultList = getAllContacts(idStage,offset,pageSize);
-                PagingObject pagingObject = new PagingObject();
-                pagingObject.setTotalPageCount(totalPageCount);
-                pagingObject.setCurrentPage(page);
-                pagingObject.setCurrentPageSize(pageSize);
-                if(page!=1){
-                    pagingObject.setPrev(CONTACT_URL+idStage+"/"+(page-1)+"/"+pageSize);
-                }
-                pagingObject.setFirst(CONTACT_URL+idStage+"/1/"+pageSize);
-                pagingObject.setLast(CONTACT_URL+idStage+"/"+totalPageCount+"/"+pageSize);
-                if(page!=totalPageCount && totalPageCount>1){
-                    pagingObject.setNext(CONTACT_URL+idStage+"/"+(page+1)+"/"+pageSize);
-                }
-                allContactsResultList.setPaging(pagingObject);
-            }
-        }catch(HttpClientErrorException e){
-            handleException(e);
-        }
-        return allContactsResultList;
+import static org.mockito.Mockito.*;
+import static org.junit.Assert.*;
+
+import org.junit.Before;
+import org.junit.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.client.HttpClientErrorException;
+
+public class TestClassTest {
+
+    @Autowired
+    private Test testClass;
+
+    @Autowired
+    private ContactsApi contactsApi;
+
+    @Before
+    public void setUp() {
+        // Initialize your class with mock dependencies
+        testClass = new Test();
+        contactsApi = mock(ContactsApi.class);
+        testClass.contactsApi = contactsApi;
+
+        // Setup common mock interactions
+        when(contactsApi.getCountByStageUsingGET(anyLong())).thenReturn(10); // Adjust return value based on test needs
     }
+
+    @Test
+    public void testGetAllContactsUsingGET_Success() {
+        // Assuming userDetailServiceImpl and other dependencies are mocked properly
+        // Setup the mock to return a valid userId and stage access
+        when(userDetailServiceImpl.getUser("validUser")).thenReturn(1L);
+        when(isValidStage(1L)).thenReturn(true);
+        when(hasStageAccess(1L, 1L)).thenReturn(true);
+
+        // Execute the method
+        AllContactsResultList result = testClass.getAllContactsUsingGET(1L, "validUser", 1, 10);
+
+        // Verify the result
+        assertNotNull(result);
+        assertNotNull(result.getPaging());
+        assertEquals(1, result.getPaging().getCurrentPage().intValue());
+    }
+
+    @Test(expected = ResourceNotFoundException.class)
+    public void testGetAllContactsUsingGET_InvalidStage() {
+        // Set up the stage validation to fail
+        when(isValidStage(anyLong())).thenReturn(false);
+
+        // Execute the method, expect an exception
+        testClass.getAllContactsUsingGET(999L, "validUser", 1, 10);
+    }
+
+    @Test(expected = ForbiddenException.class)
+    public void testGetAllContactsUsingGET_UnauthorizedAccess() {
+        // Setup the mock to return a valid userId but fail stage access check
+        when(userDetailServiceImpl.getUser("validUser")).thenReturn(1L);
+        when(isValidStage(1L)).thenReturn(true);
+        when(hasStageAccess(1L, 1L)).thenReturn(false);
+
+        // Execute the method, expect an exception
+        testClass.getAllContactsUsingGET(1L, "validUser", 1, 10);
+    }
+
+    @Test
+    public void testGetAllContactsUsingGET_HttpClientErrorException() {
+        // Setup the contactsApi to throw an HttpClientErrorException
+        when(contactsApi.getCountByStageUsingGET(anyLong())).thenThrow(new HttpClientErrorException(HttpStatus.BAD_REQUEST));
+
+        // Execute the method and assert the exception is handled properly
+        // Assuming there is a way to assert that `handleException` was called
+        AllContactsResultList result = testClass.getAllContactsUsingGET(1L, "validUser", 1, 10);
+        assertNull(result);
+        // further assertions for exception handling
+    }
+}
