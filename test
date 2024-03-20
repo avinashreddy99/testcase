@@ -1,0 +1,36 @@
+ public  AllContactsResultList  getAllContactsUsingGET(Long idStage, String userName,Integer page, Integer pageSize)
+    {
+        AllContactsResultList allContactsResultList = new AllContactsResultList();
+        try {
+            Long userId = userDetailServiceImpl.getUser(userName);
+            if(!isValidStage(idStage)){
+                throw new ResourceNotFoundException("Stage id provided is not valid");
+            }
+            if(!hasStageAccess(userId, idStage)){
+                throw new ForbiddenException("Access denied to the requested user.");
+            }
+            Integer totalCount = contactsApi.getCountByStageUsingGET(idStage);
+            if(totalCount!=0){
+                int offset = page==1?0:(page-1) * pageSize;
+                int totalPageCount = totalCount%pageSize!=0?totalCount/pageSize+1:totalCount/pageSize;
+                validatePaginationRequest(totalPageCount,page,pageSize);
+                allContactsResultList = getAllContacts(idStage,offset,pageSize);
+                PagingObject pagingObject = new PagingObject();
+                pagingObject.setTotalPageCount(totalPageCount);
+                pagingObject.setCurrentPage(page);
+                pagingObject.setCurrentPageSize(pageSize);
+                if(page!=1){
+                    pagingObject.setPrev(CONTACT_URL+idStage+"/"+(page-1)+"/"+pageSize);
+                }
+                pagingObject.setFirst(CONTACT_URL+idStage+"/1/"+pageSize);
+                pagingObject.setLast(CONTACT_URL+idStage+"/"+totalPageCount+"/"+pageSize);
+                if(page!=totalPageCount && totalPageCount>1){
+                    pagingObject.setNext(CONTACT_URL+idStage+"/"+(page+1)+"/"+pageSize);
+                }
+                allContactsResultList.setPaging(pagingObject);
+            }
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+        return allContactsResultList;
+    }
