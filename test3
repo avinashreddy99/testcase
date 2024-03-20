@@ -1,0 +1,72 @@
+public ContactResponseObject createContact(ContactRequestObject contactRequestObject, String userName){
+        ContactResponseObject contactResponseObject = new ContactResponseObject();
+        Long userId = userDetailServiceImpl.getUser(userName);
+        Long stageId = 0L;
+        Long caseId = 0L;
+        PersonList personList = null;
+        ContactDto contactDto = null;
+        NarrativeTxtDto narrativeTxtDto = null;
+        if(!ObjectUtils.isEmpty(contactRequestObject)){
+            ContactComplexDto complexDto = contactRequestObject.getContactComplexDto();
+            if(!ObjectUtils.isEmpty(complexDto)){
+                contactDto = complexDto.getContactDto();
+                stageId = (!ObjectUtils.isEmpty(contactDto)?contactDto.getIdStage():0L);
+                narrativeTxtDto = complexDto.getNarrativeTxtDto();
+                personList = complexDto.getPersonList();
+            }
+        }
+        SelectStageDto stageDto = getStageDetails(stageId);
+        if(ObjectUtils.isEmpty(stageDto) || ObjectUtils.isEmpty(stageDto.getIdStage())){
+            throw new ResourceNotFoundException("Stage id provided is not valid");
+        }
+
+        if(!hasStageAccess(userId, stageId)){
+            throw new ForbiddenException("Access denied to the requested user.");
+        }
+        try {
+            caseId = stageDto.getIdCase();
+            ContactWebDto webDto = populateContactWebDto(contactDto);
+            populatePersonsList(webDto,personList);
+            String token = getOauthToken();
+            String requestJson = null;
+            try {
+                ObjectMapper mapper = new ObjectMapper();
+                mapper.setPropertyNamingStrategy(PropertyNamingStrategy.LOWER_CAMEL_CASE);
+                requestJson = mapper.writeValueAsString(webDto);
+            } catch (JsonProcessingException e) {
+                e.printStackTrace();
+            }
+            String authorizationToken = BEARER +token;
+            ContactFormSaveDto contactFormSaveDto =contactsWebApi.saveContactDetailFromApiUsingPOST(authorizationToken,
+                    (!ObjectUtils.isEmpty(userId)) ? userId.toString() : EMPTY_STRING, requestJson );
+
+            if(!ObjectUtils.isEmpty(contactFormSaveDto) && !ObjectUtils.isEmpty(contactFormSaveDto.getErrorDtoList()) &&  contactFormSaveDto.getErrorDtoList().size() >0){
+                contactResponseObject.setSuccess(false);
+                List<String> errMessages = new ArrayList<>();
+                contactFormSaveDto.getErrorDtoList().forEach(errorDto -> {
+                    errMessages.add(errorDto.getErrorMsg());
+                });
+                throw new UnprocessableEntityException(errMessages);
+
+            }else{
+                if(!webDto.getSzCdContactType().equalsIgnoreCase(PAL_CONTACT_TYPE_NOTIFICATION)) {
+                    CommonHelperRes res = formsApi.saveFormForApiUsingPOST(authorizationToken, webDto.getSzCdContactType(),caseId.toString(), contactFormSaveDto.getIdEvent().toString(),
+                            contactDto.getDtContactOccurred().toString(), narrativeTxtDto.getNarrativeTxt(), (!ObjectUtils.isEmpty(userId)) ? userId.toString() : EMPTY_STRING);
+                    if (!ObjectUtils.isEmpty(res) && !ObjectUtils.isEmpty(res.getErrorDto())) {
+                        contactResponseObject.setSuccess(false);
+                        throw new UnprocessableEntityException(res.getErrorDto().getErrorMsg());
+                    }
+                }
+
+                contactResponseObject.setSuccess(true);
+                ContactResponseObject responseObject = getContactDtlsNarrative(Long.valueOf(contactFormSaveDto.getIdEvent()), userName);
+                if(!ObjectUtils.isEmpty(responseObject)){
+                    contactResponseObject.setData(responseObject.getData());
+                }
+
+            }
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+        return contactResponseObject;
+    }
