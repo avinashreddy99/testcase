@@ -1,0 +1,634 @@
+package gov.texas.dfps.api.contact.service.impl;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import gov.texas.dfps.api.contact.exception.BadRequestException;
+import gov.texas.dfps.api.contact.exception.ForbiddenException;
+import gov.texas.dfps.api.contact.exception.ResourceNotFoundException;
+import gov.texas.dfps.api.contact.exception.UnprocessableEntityException;
+import gov.texas.dfps.api.contact.model.*;
+
+import gov.texas.dfps.api.contact.model.PersonDto;
+import gov.texas.dfps.api.contact.service.ContactDetailService;
+import gov.texas.dfps.api.forms.client.FormsApi;
+import gov.texas.dfps.api.forms.client.model.CommonHelperRes;
+import gov.texas.dfps.api.servicebusiness.client.ContactsApi;
+import gov.texas.dfps.api.servicebusiness.client.IdentityApi;
+import gov.texas.dfps.api.servicebusiness.client.ReferralApi;
+import gov.texas.dfps.api.servicebusiness.client.model.*;
+import gov.texas.dfps.api.web.client.ContactsWebApi;
+import gov.texas.dfps.api.web.client.model.*;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
+import org.springframework.security.oauth2.common.OAuth2AccessToken;
+import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.util.ObjectUtils;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+
+@Slf4j
+@Service
+public class ContactDetailServiceImpl implements ContactDetailService {
+
+    private static String CHARACTER_ENCODING = "windows-1252";
+    private static final String EMPTY_STRING = "";
+    private static final String BEARER = "Bearer ";
+    public static final Set<String> KINSHIP_NOTIFICATION_CONTACT_TYPE = new HashSet<String>(
+            Arrays.asList("GKIN", "GKNS"));
+    public static final Set<String> PERSON_LIST_FOR_CONTACT_TYPE = new HashSet<String>(
+            Arrays.asList("GREG", "GCSA", "GHRS", "GAIN", "GPKA","JNOT","BKDS","BCSA","BREG","BHRS","BAIN","BPKA","NREG","JREG","HCSA","HREG","HAIN"));
+
+    public static final String PRINCIPAL_PERSTYPE = "PRN";
+
+    public static final String PAL_CONTACT_TYPE_NOTIFICATION = "JNOT";
+
+    @Autowired
+    private ContactsWebApi contactsWebApi;
+
+    @Autowired
+    private UserDetailServiceImpl userDetailServiceImpl;
+
+
+    @Autowired
+    private FormsApi formsApi;
+
+    @Autowired
+    private IdentityApi identityApi;
+    @Autowired
+    private ContactsApi contactsApi;
+
+    @Autowired
+    private ReferralApi referralApi;
+
+    @Value("${base.url:https://p2dev1.dfps.texas.gov}")
+    private String baseUrl;
+
+    @Value("${gov.texas.dfps.api.oauth.credentials:U1NDQ19BUEk6OWQ3ZmZhYzAtNGRhMi00Zjk1LWExMGQtNzE5OTQ5NTBjZGY1}")
+    private String credentials;
+    private final String Authorization = "Authorization";
+    private final String Basic = "Basic ";
+    private final String GRANT_TYPE="grant_type";
+    private final String CLIENT_CREDENTIALS = "client_credentials";
+    @Value("${gov.texas.dfps.api.oauth.token.url:/dfps-security-oauth2/oauth/token}")
+    private String tokenUrl;
+    private final String CONTACT_URL="/dfps-api-contact/v1/all/";
+
+    public CodesTableResponseObject getContactTypeDDLInfo(Long idStage){
+        String token = BEARER +getOauthToken();
+        List<ContactCodeTableDto> contactTypesUsingGET = new ArrayList<>();
+        try {
+            contactTypesUsingGET = contactsWebApi.getContactTypesUsingGET(token, idStage);
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+        return getCodesTableResponseObject(contactTypesUsingGET);
+    }
+    public CodesTableResponseObject getOtherTypeDDLInfo(Long idStage, String cdContactTypeQueryParam){
+        String token = BEARER +getOauthToken();
+        List<ContactCodeTableDto> contactTypesUsingGET = new ArrayList<>();
+        try {
+            contactTypesUsingGET = contactsWebApi.getOtherContactTypesUsingGET(token, cdContactTypeQueryParam, idStage);
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+        return getCodesTableResponseObject(contactTypesUsingGET);
+    }
+
+    public CodesTableResponseObject getPurposeTypeDDLInfo(Long idStage, String cdContactTypeQueryParam){
+        String token = BEARER +getOauthToken();
+        List<ContactCodeTableDto> contactTypesUsingGET = new ArrayList<>();
+        try {
+            contactTypesUsingGET = contactsWebApi.getPurposeTypesUsingGET(token, cdContactTypeQueryParam, idStage);
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+        return getCodesTableResponseObject(contactTypesUsingGET);
+    }
+
+
+
+    private CodesTableResponseObject getCodesTableResponseObject(List<ContactCodeTableDto> contactTypesUsingGET) {
+        List<CodesTable> codesTableList = contactTypesUsingGET.
+                stream().
+                map(e->{
+                    CodesTable codesTable = new CodesTable();
+                    codesTable.setCode(e.getCode());
+                    codesTable.setDecode(e.getDecode());
+                    codesTable.setHasOthersContactedList(e.getHasOthersContactedList());
+                    codesTable.setHasPurposeList(e.getHasPurposeList());
+                    return codesTable;
+                }).collect(Collectors.toList());
+        CodesTableResponseObject codesTableResponseObject = new CodesTableResponseObject();
+        codesTableResponseObject.success(true);
+        codesTableResponseObject.data(codesTableList);
+        return codesTableResponseObject;
+    }
+
+    private String getOauthToken() {
+        String accessToken = "";
+        RestTemplate template = new RestTemplate();
+        HttpHeaders headers = new HttpHeaders();
+        headers.add(Authorization, Basic+credentials);
+        MultiValueMap<String, String> map = new LinkedMultiValueMap<>();
+        map.add(GRANT_TYPE,CLIENT_CREDENTIALS);
+        HttpEntity<MultiValueMap<String, String>> entity = new HttpEntity<>(map, headers);
+        ResponseEntity<OAuth2AccessToken> response = template.exchange(baseUrl+tokenUrl,HttpMethod.POST,
+                entity, OAuth2AccessToken.class);
+        accessToken = response.getBody().getValue();
+        return accessToken;
+
+    }
+
+    public ContactResponseObject createContact(ContactRequestObject contactRequestObject, String userName){
+        ContactResponseObject contactResponseObject = new ContactResponseObject();
+        Long userId = userDetailServiceImpl.getUser(userName);
+        Long stageId = 0L;
+        PersonList personList = null;
+        ContactDto contactDto = null;
+        NarrativeTxtDto narrativeTxtDto = null;
+        if(!ObjectUtils.isEmpty(contactRequestObject)){
+            ContactComplexDto complexDto = contactRequestObject.getContactComplexDto();
+            if(!ObjectUtils.isEmpty(complexDto)){
+                contactDto = complexDto.getContactDto();
+                stageId = (!ObjectUtils.isEmpty(contactDto)?contactDto.getIdStage():0L);
+                narrativeTxtDto = complexDto.getNarrativeTxtDto();
+                personList = complexDto.getPersonList();
+            }
+        }
+        if(!isValidStage(stageId)){
+            throw new ResourceNotFoundException("Stage id provided is not valid");
+        }
+        if(!hasStageAccess(userId, stageId)){
+            throw new ForbiddenException("Access denied to the requested user.");
+        }
+        try {
+
+            ContactWebDto webDto = populateContactWebDto(contactDto);
+            populatePersonsList(webDto,personList);
+
+            String token = getOauthToken();
+            String requestJson = null;
+            try {
+                ObjectMapper mapper = new ObjectMapper();
+                mapper.setPropertyNamingStrategy(PropertyNamingStrategy.LOWER_CAMEL_CASE);
+                requestJson = mapper.writeValueAsString(webDto);
+            } catch (JsonProcessingException e) {
+                e.printStackTrace();
+            }
+            String authorizationToken = BEARER +token;
+            ContactFormSaveDto contactFormSaveDto =contactsWebApi.saveContactDetailFromApiUsingPOST(authorizationToken,
+                    (!ObjectUtils.isEmpty(userId)) ? userId.toString() : EMPTY_STRING, requestJson );
+
+            if(!ObjectUtils.isEmpty(contactFormSaveDto) && !ObjectUtils.isEmpty(contactFormSaveDto.getErrorDtoList()) &&  contactFormSaveDto.getErrorDtoList().size() >0){
+                contactResponseObject.setSuccess(false);
+                List<String> errMessages = new ArrayList<>();
+                contactFormSaveDto.getErrorDtoList().forEach(errorDto -> {
+                    errMessages.add(errorDto.getErrorMsg());
+                });
+                throw new UnprocessableEntityException(errMessages);
+
+            }else{
+                if(!webDto.getSzCdContactType().equalsIgnoreCase(PAL_CONTACT_TYPE_NOTIFICATION)) {
+                    CommonHelperRes res = formsApi.saveFormForApiUsingPOST(authorizationToken, webDto.getSzCdContactType(), contactFormSaveDto.getIdEvent().toString(),
+                            contactDto.getDtContactOccurred().toString(), narrativeTxtDto.getNarrativeTxt(), (!ObjectUtils.isEmpty(userId)) ? userId.toString() : EMPTY_STRING);
+                    if (!ObjectUtils.isEmpty(res) && !ObjectUtils.isEmpty(res.getErrorDto())) {
+                        contactResponseObject.setSuccess(false);
+                        throw new UnprocessableEntityException(res.getErrorDto().getErrorMsg());
+                    }
+                }
+
+                contactResponseObject.setSuccess(true);
+                ContactResponseObject responseObject = getContactDtlsNarrative(Long.valueOf(contactFormSaveDto.getIdEvent()), userName);
+                if(!ObjectUtils.isEmpty(responseObject)){
+                    contactResponseObject.setData(responseObject.getData());
+                }
+
+            }
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+        return contactResponseObject;
+    }
+
+    private ContactWebDto populateContactWebDto(ContactDto contactDto) {
+        ContactWebDto webDto = new ContactWebDto();
+        webDto.setUlIdPerson(!ObjectUtils.isEmpty(contactDto.getIdContactWorker())? contactDto.getIdContactWorker().intValue() : 0);
+        webDto.setUlIdStage(!ObjectUtils.isEmpty(contactDto.getIdStage())? contactDto.getIdStage().intValue() : 0);
+        webDto.setSzCdContactType(!ObjectUtils.isEmpty(contactDto.getCdContactType())?contactDto.getCdContactType()
+                :EMPTY_STRING);
+        webDto.setSzCdContactPurpose(!ObjectUtils.isEmpty(contactDto.getCdContactPurpose())?contactDto.getCdContactPurpose()
+                : EMPTY_STRING);
+        webDto.setSzCdContactMethod(!ObjectUtils.isEmpty(contactDto.getCdContactMethod()) ? contactDto.getCdContactMethod().getDfpsCode(): null);
+        webDto.setSzCdContactOthers(!ObjectUtils.isEmpty(contactDto.getCdContactOthers())? contactDto.getCdContactOthers()
+                :EMPTY_STRING);
+        webDto.setSzCdContactLocation(!ObjectUtils.isEmpty(contactDto.getCdContactLocation())? contactDto.getCdContactLocation().getDfpsCode() : null);
+        webDto.setDtDTContactOccurred(contactDto.getDtContactOccurred());
+        webDto.setDtDtMonthlySummBegin(contactDto.getDtCntctMnthlySummBeg());
+        webDto.setDtDtMonthlySummEnd(contactDto.getDtCntctMnthlySummEnd());
+        webDto.setBIndSiblingVisit(!ObjectUtils.isEmpty(contactDto.getIndSiblingVisit())? contactDto.getIndSiblingVisit()
+                : null);
+        webDto.setUlNbrHours(!ObjectUtils.isEmpty(contactDto.getEstContactHours())? contactDto.getEstContactHours()
+                : null);
+        webDto.setUlNbrMins(!ObjectUtils.isEmpty(contactDto.getEstContactMins())? contactDto.getEstContactMins()
+                : null);
+        return webDto;
+
+    }
+
+    private void populatePersonsList(ContactWebDto webDto, PersonList personDtoLst ){
+        if(!ObjectUtils.isEmpty(personDtoLst)) {
+            if (!ObjectUtils.isEmpty(webDto.getSzCdContactType()) && PERSON_LIST_FOR_CONTACT_TYPE.contains(webDto.getSzCdContactType())){
+                if (!ObjectUtils.isEmpty(personDtoLst.getPrincipalCollateralList())
+                        && personDtoLst.getPrincipalCollateralList().size() > 0) {
+                    ArrayList<ContactDetailDto> contactDetailDtoLst = populateContactDetailDto(personDtoLst.getPrincipalCollateralList());
+                    webDto.setContactedList(contactDetailDtoLst);
+                }
+            }
+            if (!ObjectUtils.isEmpty(webDto.getSzCdContactType()) && KINSHIP_NOTIFICATION_CONTACT_TYPE.contains(webDto.getSzCdContactType())){
+                if (!ObjectUtils.isEmpty(personDtoLst.getChildrenNotificationList())
+                        && personDtoLst.getChildrenNotificationList().size() > 0) {
+                    ArrayList<ContactDetailDto> childNotifLst = populateContactDetailDto(personDtoLst.getChildrenNotificationList());
+                    webDto.setChildNotifList(childNotifLst);
+                }
+                if (!ObjectUtils.isEmpty(personDtoLst.getKinNotifiedNotNotifiedList())
+                        && personDtoLst.getKinNotifiedNotNotifiedList().size() > 0) {
+                    ArrayList<ContactDetailDto> kinNotifLst = populateContactDetailDto(personDtoLst.getKinNotifiedNotNotifiedList());
+                    webDto.setKinshipNotifList(kinNotifLst);
+                }
+            }
+
+        }
+    }
+
+    private ArrayList<ContactDetailDto> populateContactDetailDto(List<PersonDto> personDtoLst) {
+        ArrayList<ContactDetailDto> contactDetailLst = new ArrayList<>();
+        personDtoLst.forEach(personDto -> {
+            ContactDetailDto detailDto = new ContactDetailDto();
+            detailDto.setSzNmPersonFull(personDto.getPersonName());
+            detailDto.setSzCdStagePersType((!ObjectUtils.isEmpty(personDto.getCdPersonType()) ? personDto.getCdPersonType().getDfpsCode() : EMPTY_STRING));
+            detailDto.setSzCdStagePersRole((!ObjectUtils.isEmpty(personDto.getCdPersonRole()) ? personDto.getCdPersonRole().getDfpsCode() : EMPTY_STRING));
+            detailDto.setSzCdStagePersRelInt((!ObjectUtils.isEmpty(personDto.getCdPersonRelation()) ? personDto.getCdPersonRelation().getDfpsCode() : EMPTY_STRING));
+            detailDto.setUlIdPerson(personDto.getIdPerson().intValue());
+            detailDto.setSzCdPersonMaritalStatus((!ObjectUtils.isEmpty(personDto.getCdPersonMaritalStatus()) ? personDto.getCdPersonMaritalStatus().getDfpsCode() : EMPTY_STRING));
+            detailDto.setContactSelected(!ObjectUtils.isEmpty(personDto.getIsPartOfContact()) && ("Y").equalsIgnoreCase(personDto.getIsPartOfContact()));
+            contactDetailLst.add(detailDto);
+        });
+        return contactDetailLst;
+    }
+
+    @Override
+    public ContactResponseObject getContactDtlsNarrative(Long eventId, String userId){
+        ContactResponseObject response = new ContactResponseObject();
+        ContactComplexDto contactComplexDto = new ContactComplexDto();
+
+        NarrativeTxtDto narrativeTxtDto = new NarrativeTxtDto();
+        Long caseId = 0L;
+        Long stageId = 0L;
+        String cdContactType = EMPTY_STRING;
+
+        String token = BEARER +getOauthToken();
+        try {
+            ContactDetailCFRes contactDetailCFRes = contactsWebApi.getUIContactDetailUsingPOST(token, eventId, userId);
+            if (!ObjectUtils.isEmpty(contactDetailCFRes)) {
+                if(null != contactDetailCFRes.getContactDetailCFROW45Bean() &&
+                        !ObjectUtils.isEmpty(contactDetailCFRes.getContactDetailCFROW45Bean().getIdCase())) {
+                    caseId = Long.valueOf(contactDetailCFRes.getContactDetailCFROW45Bean().getIdCase());
+                }
+                if(!ObjectUtils.isEmpty(contactDetailCFRes.getContactDetailCFROW45Bean().getIdStage())) {
+                    stageId = Long.valueOf(contactDetailCFRes.getContactDetailCFROW45Bean().getIdStage());
+                }
+                cdContactType = contactDetailCFRes.getCdContactType();
+            }
+
+            String narrativeText = formsApi.retrieveNarrativeDtlsUsingPOST(token, caseId, cdContactType, eventId, stageId);
+
+            if (!ObjectUtils.isEmpty(narrativeText)) {
+                narrativeTxtDto.setNarrativeTxt(narrativeText);
+                contactComplexDto.setNarrativeTxtDto(narrativeTxtDto);
+            }
+
+            ContactDto contactDto = getContactDtoFromResponse(contactDetailCFRes);
+            contactComplexDto.setContactDto(contactDto);
+
+            if (null != contactDetailCFRes.getContactCFRowSYS08Array()
+                    && !ObjectUtils.isEmpty(contactDetailCFRes.getContactCFRowSYS08Array().getRowcsys08SOList().size() > 0)) {
+                List<ContactCFDto> ocntactCFDtoLst = contactDetailCFRes.getContactCFRowSYS08Array().getRowcsys08SOList();
+
+                contactComplexDto.setPersonList(getPersonResultMapFromResponse(ocntactCFDtoLst, contactDto));
+            }
+        }
+        catch(HttpClientErrorException e){
+            handleException(e);
+        }
+
+        response.setData(contactComplexDto);
+        response.setSuccess(true);
+        return response;
+
+    }
+
+    private PersonList getPersonResultMapFromResponse(List<ContactCFDto> contactCFDtoLst, ContactDto contactDto) {
+        PersonList personLst = new PersonList();
+        if(!ObjectUtils.isEmpty(contactDto.getCdContactType()) &&
+                (KINSHIP_NOTIFICATION_CONTACT_TYPE.contains(contactDto.getCdContactType()))){
+            List<PersonDto> childrenLst = new ArrayList<>();
+            List<PersonDto> kinshipNotified = new ArrayList<>();
+            for(ContactCFDto dto : contactCFDtoLst){
+                if(getAge(dto.getDtDtPersonBirth())< 18 &&
+                        PRINCIPAL_PERSTYPE.equalsIgnoreCase(dto.getSzCdStagePersType())){
+                    PersonDto personDto = createPersonDto(dto);
+                    childrenLst.add(personDto);
+                }else{
+                    PersonDto personDto = createPersonDto(dto);
+                    personDto.setIsCandidateNotNotified(dto.getcIndKinNotifChild());
+                    kinshipNotified.add(personDto);
+                }
+            }
+
+            if(!CollectionUtils.isEmpty(childrenLst)){
+                personLst.setChildrenNotificationList(childrenLst);
+            }
+            if(!CollectionUtils.isEmpty(kinshipNotified)){
+                personLst.setKinNotifiedNotNotifiedList(kinshipNotified);
+            }
+        }else if(!CollectionUtils.isEmpty(contactCFDtoLst) && !ObjectUtils.isEmpty(contactDto.getCdContactType())
+                && PERSON_LIST_FOR_CONTACT_TYPE.contains(contactDto.getCdContactType())){
+            List<PersonDto> principalColl = new ArrayList<>();
+            for(ContactCFDto dto : contactCFDtoLst){
+                PersonDto personDto = createPersonDto(dto);
+                principalColl.add(personDto);
+            }
+            personLst.setPrincipalCollateralList(principalColl);
+        }
+        return personLst;
+    }
+
+    private PersonDto createPersonDto(ContactCFDto dto) {
+        PersonDto personDto = new PersonDto();
+        if(!ObjectUtils.isEmpty(dto.getUlIdPerson())) {
+            personDto.setIdPerson(Long.valueOf(dto.getUlIdPerson()));
+        }
+        personDto.setPersonName(dto.getSzNmPersonFull());
+        if(!ObjectUtils.isEmpty(dto.getSzCdStagePersRole())) {
+            personDto.setCdPersonRole(EnumRole.fromDFPSCode(dto.getSzCdStagePersRole()));
+        }
+        if(!ObjectUtils.isEmpty(dto.getSzCdStagePersType())) {
+            personDto.setCdPersonType(EnumPersonType.fromDFPSCode(dto.getSzCdStagePersType()));
+        }
+        if(!ObjectUtils.isEmpty(dto.getSzCdStagePersRelInt())) {
+            personDto.setCdPersonRelation(EnumRelation.fromDFPSCode(dto.getSzCdStagePersRelInt()));
+        }
+        if(!ObjectUtils.isEmpty(dto.getSzCdPersonMaritalStatus())) {
+            personDto.setCdPersonMaritalStatus(EnumMaritalStatus.fromDFPSCode(dto.getSzCdPersonMaritalStatus()));
+        }
+        if(!ObjectUtils.isEmpty(dto.getDtDtPersonBirth())) {
+            personDto.setPersonAge(getAge(dto.getDtDtPersonBirth()));
+        }
+        personDto.setIsPartOfContact(dto.getcSysIndContactOccurred());
+        return personDto;
+    }
+
+    private ContactDto getContactDtoFromResponse(ContactDetailCFRes contactDetailCFRes) {
+        ContactDto contactDto = new ContactDto();
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getContactDetailCFROW45Bean().getIdStage())) {
+            contactDto.setIdStage(Long.valueOf(contactDetailCFRes.getContactDetailCFROW45Bean().getIdStage()));
+        }
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getContactDetailCFROW45Bean().getIdEvent())) {
+            contactDto.setIdEvent(Long.valueOf(contactDetailCFRes.getContactDetailCFROW45Bean().getIdEvent()));
+        }
+        contactDto.setDtLastUpdate(contactDetailCFRes.getTsLastUpdate());
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getIdPerson())) {
+            contactDto.setIdContactWorker(Long.valueOf(contactDetailCFRes.getIdPerson()));
+        }
+        contactDto.setDtContactOccurred(contactDetailCFRes.getdTContactOccurred());
+
+        contactDto.setIndContactAttempted(contactDetailCFRes.getIndContactAttempted());
+        contactDto.setCdContactType(contactDetailCFRes.getCdContactType());
+        contactDto.setCdContactPurpose(contactDetailCFRes.getCdContactPurpose());
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdContactLocation())){
+            contactDto.setCdContactLocation(EnumContactLocation.fromDFPSCode(contactDetailCFRes.getCdContactLocation()));
+        }
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdContactMethod())) {
+            contactDto.setCdContactMethod(EnumContactMethod.fromDFPSCode(contactDetailCFRes.getCdContactMethod()));
+        }
+        contactDto.setCdContactOthers(contactDetailCFRes.getCdContactOthers());
+        contactDto.setDtCntctMnthlySummBeg(contactDetailCFRes.getDtMonthlySummBegin());
+        contactDto.setDtCntctMnthlySummEnd(contactDetailCFRes.getDtMonthlySummEnd());
+        contactDto.setIndEmergency(contactDetailCFRes.getIndEmergency());
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdReasonScreenOut())) {
+            contactDto.setCdRsnScrout(EnumReasonScreenedOut.fromDFPSCode(contactDetailCFRes.getCdReasonScreenOut()));
+        }
+        contactDto.setIndRecCons(contactDetailCFRes.getIndKinRecmd());
+        contactDto.setTxtKinCaregiver(contactDetailCFRes.getNmKnCgvr());
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdRsnNotNeed())) {
+            contactDto.setCdRsnAmtne(EnumReasonAmtNotEntered.fromDFPSCode(contactDetailCFRes.getCdRsnNotNeed()));
+        }
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getAmtNeeded()) &&
+                contactDetailCFRes.getAmtNeeded() > 0) {
+            contactDto.setAmtNeeded(Math.toIntExact(contactDetailCFRes.getAmtNeeded()));
+        }
+        contactDto.setIndSiblingVisit(contactDetailCFRes.getIndSiblingVisit());
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdChildSafety())) {
+            contactDto.setCdChildSafety(EnumChildSafetyReason.fromDFPSCode(contactDetailCFRes.getCdChildSafety()));
+        }
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdPendLegalAction())) {
+            contactDto.setCdPendLegalAction(EnumPendLegalAction.fromDFPSCode(contactDetailCFRes.getCdPendLegalAction()));
+        }
+        contactDto.setIndPrincipalInterview(contactDetailCFRes.getIndPrinInterview());
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdProfCollateral())) {
+            contactDto.setCdProfCollateral(EnumProfCollateral.fromDFPSCode(contactDetailCFRes.getCdProfCollateral()));
+        }
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdAdministrative())) {
+            contactDto.setCdAdministrative(EnumAdminReason.fromDFPSCode(contactDetailCFRes.getCdAdministrative()));
+        }
+        contactDto.setTxtComments(contactDetailCFRes.getTxtComments());
+        contactDto.setIndAnnounced(contactDetailCFRes.getIndAnnounced());
+        contactDto.setIndSafPlanComp(contactDetailCFRes.getIndSafPlnCompleted());
+        contactDto.setIndSafConResolv(contactDetailCFRes.getIndSafConResolved());
+
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getNbrHours()) &&
+                contactDetailCFRes.getNbrHours() > 0){
+            contactDto.setEstContactHours(Math.toIntExact(contactDetailCFRes.getNbrHours()));
+        }
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getNbrMins()) &&
+                contactDetailCFRes.getNbrMins() > 0){
+            contactDto.setEstContactMins(Math.toIntExact(contactDetailCFRes.getNbrMins()));
+        }
+        //contactDto.setNmContactOth(); we are not retrieving it from db
+        if(!ObjectUtils.isEmpty(contactDetailCFRes.getCdFtfExceptionRsn())) {
+            contactDto.setCdFtfExceptionRsn(EnumFTFExceptionRsn.fromDFPSCode(contactDetailCFRes.getCdFtfExceptionRsn()));
+        }
+        return contactDto;
+    }
+
+    public static int getAge(Date birthdate) {
+        Date todayDate = new Date();
+        int age = 0;
+        if (!ObjectUtils.isEmpty(birthdate)) {
+            age = todayDate.getYear() - birthdate.getYear();
+            // birthday has occurred
+            if ((birthdate.getMonth() > todayDate.getMonth()) ||
+                    // birthday has occured in current month
+                    ((birthdate.getMonth() == todayDate.getMonth()) && ((birthdate.getDate() > todayDate.getDate())))) {
+                age = age - 1;
+            }
+        }
+        return age;
+    }
+    public AssignWorkloadRes getAssignWorkloadDtlsUsingPOST(String userName)
+    {
+        AssignWorkloadReq assignWorkloadReq =null;
+        SearchEmployeeReq searchEmployeeReq = new SearchEmployeeReq();
+        searchEmployeeReq.setSearchId( userDetailServiceImpl.getUser(userName));
+        EmployeeProfileRes employeeProfileRes = identityApi.getEmployeeProfileByLogonUsingPOST(searchEmployeeReq);
+        assignWorkloadReq = new AssignWorkloadReq().ulIdPerson(employeeProfileRes.getEmployeeProfileDto().getEmployeeDetails().getIdPerson())
+                .szCdUnitProgram(employeeProfileRes.getEmployeeProfileDto().getEmployeeDetails().getCdUnitProgram())
+                .szCdUnitRegion(employeeProfileRes.getEmployeeProfileDto().getEmployeeDetails().getCdUnitRegion())
+                .szNbrUnit(employeeProfileRes.getEmployeeProfileDto().getEmployeeDetails().getNbrUnit());
+
+        AssignWorkloadRes assignWorkloadRes = identityApi.getAssignWorkloadDtlsUsingPOST(assignWorkloadReq);
+
+        return  assignWorkloadRes;
+
+    }
+
+    public  AllContactsResultList  getAllContactsUsingGET(Long idStage, String userName,Integer page, Integer pageSize)
+    {
+        AllContactsResultList allContactsResultList = new AllContactsResultList();
+        try {
+            Long userId = userDetailServiceImpl.getUser(userName);
+            if(!isValidStage(idStage)){
+                throw new ResourceNotFoundException("Stage id provided is not valid");
+            }
+            if(!hasStageAccess(userId, idStage)){
+                throw new ForbiddenException("Access denied to the requested user.");
+            }
+            Integer totalCount = contactsApi.getCountByStageUsingGET(idStage);
+            if(totalCount!=0){
+                int offset = page==1?0:(page-1) * pageSize;
+                int totalPageCount = totalCount%pageSize!=0?totalCount/pageSize+1:totalCount/pageSize;
+                validatePaginationRequest(totalPageCount,page,pageSize);
+                allContactsResultList = getAllContacts(idStage,offset,pageSize);
+                PagingObject pagingObject = new PagingObject();
+                pagingObject.setTotalPageCount(totalPageCount);
+                pagingObject.setCurrentPage(page);
+                pagingObject.setCurrentPageSize(pageSize);
+                if(page!=1){
+                    pagingObject.setPrev(CONTACT_URL+idStage+"/"+(page-1)+"/"+pageSize);
+                }
+                pagingObject.setFirst(CONTACT_URL+idStage+"/1/"+pageSize);
+                pagingObject.setLast(CONTACT_URL+idStage+"/"+totalPageCount+"/"+pageSize);
+                if(page!=totalPageCount && totalPageCount>1){
+                    pagingObject.setNext(CONTACT_URL+idStage+"/"+(page+1)+"/"+pageSize);
+                }
+                allContactsResultList.setPaging(pagingObject);
+            }
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+        return allContactsResultList;
+    }
+
+    private void validatePaginationRequest(int totalPageCount, Integer page, Integer pageSize) {
+        if(page==0){
+            throw new UnprocessableEntityException("The requested page cannot be 0. Please provide an appropriate page value.");
+        }
+        if(page>totalPageCount){
+            throw new UnprocessableEntityException("The requested page exceeds the total page count of "+totalPageCount+". Please provide a valid page value.");
+        }
+    }
+
+    public  AllContactsResultList  getAllContacts(Long idStage, Integer offset, Integer pageSize)
+    {
+        AllContactsResultList allContactsResultList = new AllContactsResultList();
+        try {
+            AllContactsListResponseObject resp = new AllContactsListResponseObject();
+            List<AllContactsResult> allContactsResult = new ArrayList<>();
+            List<ContactSearchListDto> contactSearchListDtos = contactsApi.searchContactsForAPIPaginationUsingGET(idStage,offset,pageSize);
+
+            for (ContactSearchListDto dto : contactSearchListDtos) {
+                AllContactsResult contact = new AllContactsResult();
+                contact.setCdContactType(dto.getCdContactType());
+                contact.setIdStage(idStage);
+                contact.setPersonName(dto.getNmContact1());
+                contact.setCdWkldStage(EnumStage.fromDFPSCode(dto.getCdStage()));
+                contact.setCdPurposeType(dto.getCdContactPurpose());
+                contact.setIsNarrativeAvailable(dto.getIndStructNarrExists());
+                contact.setDtStageAssigned(dto.getDtContactOccurred());
+                allContactsResult.add(contact);
+            }
+            allContactsResultList.setAllContactsResultList(allContactsResult);
+        }catch(HttpClientErrorException e){
+            handleException(e);
+        }
+
+        return allContactsResultList;
+
+    }
+
+    private void handleException(HttpClientErrorException e) {
+        ResponseErrors responseErrors = null;
+        if(e.getStatusCode().equals(HttpStatus.NOT_FOUND)){
+            try {
+                responseErrors = processException(e);
+            } catch (JsonProcessingException ex) {
+                throw new ResourceNotFoundException(e.getMessage());
+            }
+            throw new ResourceNotFoundException(responseErrors.getErrors());
+        }else if(e.getStatusCode().equals(HttpStatus.BAD_REQUEST)){
+            try {
+                responseErrors = processException(e);
+            } catch (JsonProcessingException ex) {
+                throw new BadRequestException(e.getMessage());
+            }
+            throw new BadRequestException(responseErrors.getErrors());
+        }else if(e.getStatusCode().equals(HttpStatus.FORBIDDEN)){
+            try {
+                responseErrors = processException(e);
+            } catch (JsonProcessingException ex) {
+                throw new ForbiddenException(e.getMessage());
+            }
+            throw new ForbiddenException(responseErrors.getErrors());
+        }
+    }
+
+    private ResponseErrors processException(HttpClientErrorException e) throws JsonProcessingException {
+        String responseBody = e.getResponseBodyAsString();
+        ObjectMapper mapper = new ObjectMapper();
+        ResponseErrors responseErrors;
+        try {
+            responseErrors = mapper.readValue(responseBody, ResponseErrors.class);
+        } catch (JsonProcessingException ex) {
+            throw ex;
+        }
+        return responseErrors;
+    }
+
+    private boolean hasStageAccess(Long userId, long stageId) {
+        CommonHelperReq commonHelperReq = new CommonHelperReq();
+        commonHelperReq.setIdPerson( userId);
+        commonHelperReq.setIdStage( stageId );
+        gov.texas.dfps.api.servicebusiness.client.model.CommonHelperRes commonHelperRes = identityApi.hasStageAccessUsingPOST(commonHelperReq);
+        return commonHelperRes.getHasStageAccess() ;
+    }
+
+    private boolean isValidStage(Long stageId) {
+        CommonHelperReq commonHelperReq = new CommonHelperReq();
+        commonHelperReq.setIdStage( stageId );
+        SelectStageDto stageDto = referralApi.getStageUsingPOST(commonHelperReq);
+
+        return (ObjectUtils.isEmpty(stageDto) || ObjectUtils.isEmpty(stageDto.getIdStage()))? false: true;
+    }
+}
