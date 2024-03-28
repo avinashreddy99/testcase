@@ -1,25 +1,57 @@
-private void handleException(HttpClientErrorException e) {
-        ResponseErrors responseErrors = null;
-        if(e.getStatusCode().equals(HttpStatus.NOT_FOUND)){
-            try {
-                responseErrors = processException(e);
-            } catch (JsonProcessingException ex) {
-                throw new ResourceNotFoundException(e.getMessage());
-            }
-            throw new ResourceNotFoundException(responseErrors.getErrors());
-        }else if(e.getStatusCode().equals(HttpStatus.BAD_REQUEST)){
-            try {
-                responseErrors = processException(e);
-            } catch (JsonProcessingException ex) {
-                throw new BadRequestException(e.getMessage());
-            }
-            throw new BadRequestException(responseErrors.getErrors());
-        }else if(e.getStatusCode().equals(HttpStatus.FORBIDDEN)){
-            try {
-                responseErrors = processException(e);
-            } catch (JsonProcessingException ex) {
-                throw new ForbiddenException(e.getMessage());
-            }
-            throw new ForbiddenException(responseErrors.getErrors());
+public class ExceptionHandlerTest {
+
+    @Test
+    public void testHandleExceptionNotFound() {
+        HttpClientErrorException exception = new HttpClientErrorException(HttpStatus.NOT_FOUND, "Not Found");
+        ExceptionHandler handler = new ExceptionHandler();
+
+        assertThrows(ResourceNotFoundException.class, () -> handler.handleException(exception));
+    }
+
+    @Test
+    public void testHandleExceptionBadRequest() {
+        HttpClientErrorException exception = new HttpClientErrorException(HttpStatus.BAD_REQUEST, "Bad Request");
+        ExceptionHandler handler = new ExceptionHandler();
+
+        assertThrows(BadRequestException.class, () -> handler.handleException(exception));
+    }
+
+    @Test
+    public void testHandleExceptionForbidden() {
+        HttpClientErrorException exception = new HttpClientErrorException(HttpStatus.FORBIDDEN, "Forbidden");
+        ExceptionHandler handler = new ExceptionHandler();
+
+        assertThrows(ForbiddenException.class, () -> handler.handleException(exception));
+    }
+
+    @Test
+    public void testHandleExceptionProcessExceptionFailure() {
+        HttpClientErrorException exception = new HttpClientErrorException(HttpStatus.NOT_FOUND, "Not Found");
+        ExceptionHandler handler = new ExceptionHandler();
+
+        // Mocking processException to throw JsonProcessingException
+        try (MockedStatic<ExceptionHandler> mocked = Mockito.mockStatic(ExceptionHandler.class)) {
+            mocked.when(() -> ExceptionHandler.processException(exception))
+                  .thenThrow(JsonProcessingException.class);
+
+            assertThrows(ResourceNotFoundException.class, () -> handler.handleException(exception));
         }
     }
+
+    @Test
+    public void testHandleExceptionProcessExceptionSuccess() throws JsonProcessingException {
+        HttpClientErrorException exception = new HttpClientErrorException(HttpStatus.NOT_FOUND, "Not Found");
+        ExceptionHandler handler = new ExceptionHandler();
+
+        // Mocking processException to return a ResponseErrors object
+        ResponseErrors responseErrors = new ResponseErrors();
+        responseErrors.setErrors("Error message");
+        try (MockedStatic<ExceptionHandler> mocked = Mockito.mockStatic(ExceptionHandler.class)) {
+            mocked.when(() -> ExceptionHandler.processException(exception))
+                  .thenReturn(responseErrors);
+
+            ResourceNotFoundException ex = assertThrows(ResourceNotFoundException.class, () -> handler.handleException(exception));
+            assertEquals("Error message", ex.getMessage());
+        }
+    }
+}
